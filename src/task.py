@@ -1,6 +1,5 @@
 import argparse
 import ee
-from google.cloud.storage import Client
 from osgeo import gdal
 from osgeo.utils import gdal_merge as gm
 from pathlib import Path
@@ -20,40 +19,27 @@ class HIIExport(HIITask):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.gclient = Client()
 
         self.hii, _ = self.get_most_recent_image(
             ee.ImageCollection(self.inputs["hii"]["ee_path"])
         )
 
-    # TODO: refactor into task_base
-    def download_from_cloudstorage(self, blob_path: str, local_path: str) -> str:
-        bucket = self.gclient.get_bucket(self.BUCKET)
-        blob = bucket.blob(blob_path)
-        blob.download_to_filename(local_path)
-        return local_path
-
-    def upload_to_cloudstorage(self, local_path: str, blob_path: str) -> str:
-        bucket = self.gclient.get_bucket(self.BUCKET)
-        blob = bucket.blob(blob_path)
-        blob.upload_from_filename(local_path, timeout=3600)
-        return blob_path
-
     def calc(self):
         taskdate = self.taskdate.isoformat()
-        prefix = f"hii/{taskdate}"
+        localdir = f"/hii/{taskdate}"
 
-        self.export_image_cloudstorage(
-            self.hii.unmask(self.NODATA).toInt16(), self.BUCKET, f"{prefix}/hii"
+        self.image2storage(
+            self.hii.unmask(self.NODATA).toInt16(), self.BUCKET, f"{taskdate}/hii"
         )
         self.wait()
-        Path(f"/{prefix}").mkdir(parents=True, exist_ok=True)
+        Path(localdir).mkdir(parents=True, exist_ok=True)
 
+        # ee will write export from image2storage to multiple tiffs (for large images)
         tiffs = []
-        for blob in self.gclient.list_blobs(self.BUCKET, prefix=prefix):
+        for blob in self.gcsclient.list_blobs(self.BUCKET, prefix=taskdate):
             blob_path = blob.name
-            local_path = f"/{prefix}/{blob_path.split('/')[-1]}"
-            self.download_from_cloudstorage(blob_path, local_path)
+            local_path = f"{localdir}/{blob_path.split('/')[-1]}"
+            self.download_from_cloudstorage(blob_path, local_path, self.BUCKET)
             tiffs.append(local_path)
 
         merge_args = [
@@ -69,17 +55,22 @@ class HIIExport(HIITask):
             "-co",
             "BIGTIFF=YES",
         ]
-        merged_tiff = f"/{prefix}/hii_{taskdate}_merged.tif"
+        merged_tiff = f"{localdir}/hii_{taskdate}_merged.tif"
         # TODO: replace with mosaic that doesn't write to disk
         gm.main(merge_args + ["-o", merged_tiff] + tiffs)
 
-        blob_path = f"{prefix}/hii_{taskdate}.tif"
-        cog = f"/{blob_path}"
-        options = "-of COG -co COMPRESS=LZW"
-        ds = gdal.Translate(cog, merged_tiff, options=options)
+        cog = f"hii_{taskdate}.tif"
+        local_cog = f"{localdir}/{cog}"
+        blob_path = f"{taskdate}/{cog}"
+        options = [
+            "-of COG",
+            "-co COMPRESS=LZW",
+            "-co OVERVIEW_COMPRESS=WEBP",  # only available with GDAL 3.3+
+        ]
+        ds = gdal.Translate(local_cog, merged_tiff, options=" ".join(options))
         ds = None
 
-        self.upload_to_cloudstorage(cog, blob_path)
+        self.upload_to_cloudstorage(local_cog, blob_path, self.BUCKET)
         Path(merged_tiff).unlink(missing_ok=True)
 
     def check_inputs(self):

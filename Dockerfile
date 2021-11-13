@@ -4,6 +4,7 @@ RUN apt-get update
 RUN apt-get install -y gdal-bin libgdal-dev g++
 
 RUN /usr/local/bin/python -m pip install --no-cache-dir \
+    numpy==1.21.4 \
     gdal==3.2.2 \
     git+https://github.com/SpeciesConservationLandscapes/task_base.git
 
