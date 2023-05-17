@@ -19,19 +19,28 @@ class HIIExport(HIITask):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-
-        self.hii, _ = self.get_most_recent_image(
-            ee.ImageCollection(self.inputs["hii"]["ee_path"])
-        )
+        self.noosm = kwargs.get("noosm", False)
 
     def calc(self):
         taskdate = self.taskdate.isoformat()
         localdir = f"/hii/{taskdate}"
 
+        if self.noosm is False:
+            self.hii, _ = self.get_most_recent_image(
+                ee.ImageCollection(self.inputs["hii"]["ee_path"])
+            )
+            self.BUCKET = self.BUCKET
+        else:
+            self.hii, _ = self.get_most_recent_image(
+                ee.ImageCollection(self.inputs["hii"]["ee_path"] + "_no_osm")
+            )
+            self.BUCKET = "hii-no-osm-export"
+
         self.image2storage(
             self.hii.unmask(self.NODATA).toInt16(), self.BUCKET, f"{taskdate}/hii"
         )
         self.wait()
+
         Path(localdir).mkdir(parents=True, exist_ok=True)
 
         # ee will write export from image2storage to multiple tiffs (for large images)
@@ -84,6 +93,12 @@ if __name__ == "__main__":
         "--overwrite",
         action="store_true",
         help="overwrite existing outputs instead of incrementing",
+    )
+    parser.add_argument(
+        "-n",
+        "--noosm",
+        action="store_true",
+        help="do not include osm in driver calculation",
     )
     options = parser.parse_args()
     hii_export_task = HIIExport(**vars(options))
